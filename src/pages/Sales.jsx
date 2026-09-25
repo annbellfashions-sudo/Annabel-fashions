@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabaseClient'
 import Receipt from './Receipt'
 import BarcodeScanner from './BarcodeScanner'
 import { playScanError } from '../lib/sound'
-import { cacheTable, getCachedTable, queueInsert, addToSyncQueue, syncNow } from '../lib/offlineStore'
+import { localGet, localSet } from '../lib/offlineStore'
 
 export default function Sales() {
   const [products, setProducts] = useState([])
@@ -27,19 +27,48 @@ export default function Sales() {
   }
 
   async function loadProducts() {
-    const { data, error } = await supabase.from('products').select('*')
-    if (!error && data) { await cacheTable('products', data); setProducts(data); return }
-    setProducts(await getCachedTable('products'))
+    if (!navigator.onLine) { setProducts((await localGet('products')) || []); return }
+    const { data } = await supabase.from('products').select('*')
+    const rows = data || []
+    setProducts(rows)
+    await localSet('products', rows)
   }
   async function loadServices() {
-    const { data, error } = await supabase.from('services').select('*').order('name')
-    if (!error && data) { await cacheTable('services', data); setServices(data); return }
-    setServices(await getCachedTable('services'))
+    if (!navigator.onLine) { setServices((await localGet('services')) || []); return }
+    const { data } = await supabase.from('services').select('*').order('name')
+    const rows = data || []
+    setServices(rows)
+    await localSet('services', rows)
   }
   async function loadCustomers() {
-    const { data, error } = await supabase.from('customers').select('*').order('name')
-    if (!error && data) { await cacheTable('customers', data); setCustomers(data); return }
-    setCustomers(await getCachedTable('customers'))
+    if (!navigator.onLine) { setCustomers((await localGet('customers')) || []); return }
+    const { data } = await supabase.from('customers').select('*').order('name')
+    const rows = data || []
+    setCustomers(rows)
+    await localSet('customers', rows)
+  }
+
+  async function syncOfflineSales() {
+    if (!navigator.onLine) return
+    const queue = (await localGet('offline_sales')) || []
+    if (!queue.length) return
+    const remaining = []
+    for (const entry of queue) {
+      try {
+        const { data: sale, error } = await supabase.from('sales').insert(entry.sale && { customer_name: entry.sale.customer_name, total: entry.sale.total, payment_method: entry.sale.payment_method, status: entry.sale.status, amount_paid: entry.sale.amount_paid }).select().single()
+        if (error) throw error
+        const items = entry.items.map(i => ({ ...i, sale_id: sale.id }))
+        const { error: itemError } = await supabase.from('sales_items').insert(items)
+        if (itemError) throw itemError
+        for (const i of entry.items) if (i.product_id) {
+          const p = products.find(x => x.id === i.product_id)
+          if (p) await supabase.from('products').update({ stock_quantity: Math.max(0, p.stock_quantity - i.quantity) }).eq('id', p.id)
+        }
+      } catch (e) { remaining.push(entry) }
+    }
+    await localSet('offline_sales', remaining)
+    if (!remaining.length) setStatus('Offline sales synchronized with Supabase.')
+    await loadProducts(); await loadCustomers()
   }
 
   useEffect(() => {
@@ -47,10 +76,10 @@ export default function Sales() {
     loadServices()
     loadCustomers()
     loadStaffName()
-    syncNow(supabase)
-    const onOnline = () => syncNow(supabase).then(() => { loadProducts(); loadCustomers() })
-    window.addEventListener('online', onOnline)
-    return () => window.removeEventListener('online', onOnline)
+    const online = () => syncOfflineSales()
+    window.addEventListener('online', online)
+    if (navigator.onLine) syncOfflineSales()
+    return () => window.removeEventListener('online', online)
   }, [])
 
   function addProductToCart(product) {
@@ -114,32 +143,54 @@ export default function Sales() {
       const finalName = customerName.trim() || 'Walk-in'
       const paidAmount = amountPaid !== '' ? parseFloat(amountPaid) : total
 
+      if (!navigator.onLine) {
+        const sale = {
+          id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          customer_name: finalName, total, payment_method: paymentMethod,
+          status: 'completed', amount_paid: paidAmount, offline: true,
+          created_at: new Date().toISOString()
+        }
+        const items = cart.map((c) => ({
+          product_id: c.type === 'product' ? c.item.id : null,
+          service_id: c.type === 'service' ? c.item.id : null,
+          item_type: c.type, quantity: c.quantity, unit_price: c.item.price,
+          cost_price: c.type === 'product' ? c.item.cost_price || 0 : 0,
+          subtotal: c.item.price * c.quantity,
+        }))
+        const queue = (await localGet('offline_sales')) || []
+        queue.push({ sale, items, customerName: finalName })
+        await localSet('offline_sales', queue)
+        const nextProducts = products.map(p => {
+          const line = cart.find(c => c.type === 'product' && c.item.id === p.id)
+          return line ? { ...p, stock_quantity: Math.max(0, p.stock_quantity - line.quantity) } : p
+        })
+        setProducts(nextProducts)
+        await localSet('products', nextProducts)
+        setCompletedSale({ sale, items: cart.map(c => ({ product: { id: c.item.id, name: c.item.name, price: c.item.price }, quantity: c.quantity })) })
+        setCart([]); setCustomerName(''); setAmountPaid('')
+        setStatus('Sale saved on this phone. It will sync when internet returns.')
+        return
+      }
+
       let customer = customers.find((c) => c.name.toLowerCase() === finalName.toLowerCase())
       if (!customer && finalName !== 'Walk-in') {
-        const newCustomer = { id: crypto.randomUUID(), name: finalName, email: null, phone: null, total_spent: 0, created_at: new Date().toISOString() }
-        const customerResult = await queueInsert(supabase, 'customers', newCustomer)
-        if (customerResult.error) throw customerResult.error
+        const { data: newCustomer, error: custError } = await supabase
+          .from('customers')
+          .insert({ name: finalName })
+          .select()
+          .single()
+        if (custError) throw custError
         customer = newCustomer
-        const updatedCustomers = [...customers, newCustomer]
-        setCustomers(updatedCustomers)
-        await cacheTable('customers', updatedCustomers)
       }
 
-      const sale = {
-        id: crypto.randomUUID(),
-        customer_name: finalName,
-        total,
-        payment_method: paymentMethod,
-        status: 'completed',
-        amount_paid: paidAmount,
-        created_by: (await supabase.auth.getUser()).data.user?.id || null,
-        created_at: new Date().toISOString(),
-      }
-      const saleResult = await queueInsert(supabase, 'sales', sale)
-      if (saleResult.error) throw saleResult.error
+      const { data: sale, error: saleError } = await supabase
+        .from('sales')
+        .insert({ customer_name: finalName, total, payment_method: paymentMethod, status: 'completed', amount_paid: paidAmount })
+        .select()
+        .single()
+      if (saleError) throw saleError
 
       const items = cart.map((c) => ({
-        id: crypto.randomUUID(),
         sale_id: sale.id,
         product_id: c.type === 'product' ? c.item.id : null,
         service_id: c.type === 'service' ? c.item.id : null,
@@ -149,30 +200,20 @@ export default function Sales() {
         cost_price: c.type === 'product' ? c.item.cost_price || 0 : 0,
         subtotal: c.item.price * c.quantity,
       }))
-      for (const item of items) {
-        const itemResult = await queueInsert(supabase, 'sales_items', item)
-        if (itemResult.error) throw itemResult.error
-      }
+      const { error: itemsError } = await supabase.from('sales_items').insert(items)
+      if (itemsError) throw itemsError
 
-      const updatedProducts = products.map((p) => {
-        const c = cart.find((x) => x.type === 'product' && x.item.id === p.id)
-        return c ? { ...p, stock_quantity: Math.max(0, p.stock_quantity - c.quantity) } : p
-      })
-      setProducts(updatedProducts)
-      await cacheTable('products', updatedProducts)
-      if (navigator.onLine) {
-        for (const c of cart) if (c.type === 'product') await supabase.from('products').update({ stock_quantity: Math.max(0, c.item.stock_quantity - c.quantity) }).eq('id', c.item.id)
-      } else {
-        for (const c of cart) await addToSyncQueue({ type: 'update', table: 'products', id_value: c.item.id, changes: { stock_quantity: Math.max(0, c.item.stock_quantity - c.quantity) } })
+      for (const c of cart) {
+        if (c.type === 'product') {
+          await supabase
+            .from('products')
+            .update({ stock_quantity: Math.max(0, c.item.stock_quantity - c.quantity) })
+            .eq('id', c.item.id)
+        }
       }
 
       if (customer) {
-        const newTotal = Number(customer.total_spent || 0) + total
-        const updatedCustomers = customers.map((c) => c.id === customer.id ? { ...c, total_spent: newTotal } : c)
-        setCustomers(updatedCustomers)
-        await cacheTable('customers', updatedCustomers)
-        if (navigator.onLine) await supabase.from('customers').update({ total_spent: newTotal }).eq('id', customer.id)
-        else await addToSyncQueue({ type: 'update', table: 'customers', id_value: customer.id, changes: { total_spent: newTotal } })
+        await supabase.from('customers').update({ total_spent: Number(customer.total_spent || 0) + total }).eq('id', customer.id)
       }
 
       setCompletedSale({
