@@ -39,10 +39,3 @@ This app needs its own fresh Supabase project — it does **not** reuse the phar
 8. **Deploy**: push this folder to a GitHub repo, then import it into Vercel as a new project (Framework preset: Vite), with the two environment variables from step 6 set.
 
 Once deployed, sign in with the admin account you created in step 4, and use Settings to create logins for the rest of the staff.
-
-
-## Step 1B — Offline sales foundation
-
-This version keeps the existing Supabase backend and adds a phone-local IndexedDB cache and synchronization queue. Products, services and customers used by the Sales screen are cached locally after a successful online load. Sales and sale items can be recorded while offline and are queued for upload when the phone reconnects. Product stock and customer totals are updated locally and queued for synchronization.
-
-This is an incremental offline implementation. The remaining admin modules (Products, Customers, Services, Vendors, Orders and Expenses) can be migrated to the same queue in the next step after this version is tested.
