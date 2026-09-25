@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import { localGet, localSet } from '../lib/offlineStore'
 
 const SUGGESTED_SERVICES = [
   { name: 'Custom garment tailoring', description: 'Made-to-measure suits, dresses, and outfits' },
@@ -26,12 +27,34 @@ export default function Services() {
   const [error, setError] = useState('')
 
   async function loadServices() {
-    const { data } = await supabase.from('services').select('*').order('created_at', { ascending: false })
-    setServices(data || [])
+    if (!navigator.onLine) { setServices((await localGet('services')) || []); return }
+    const { data, error: loadError } = await supabase.from('services').select('*').order('created_at', { ascending: false })
+    if (loadError) { setServices((await localGet('services')) || []); return }
+    setServices(data || []); await localSet('services', data || [])
+  }
+
+  async function syncOfflineServices() {
+    if (!navigator.onLine) return
+    const queue = (await localGet('offline_services')) || []
+    if (!queue.length) return
+    const remaining = []
+    for (const item of queue) {
+      try {
+        if (item.operation === 'insert') { const { error } = await supabase.from('services').insert(item.payload); if (error) throw error }
+        else if (item.operation === 'update') { const { error } = await supabase.from('services').update(item.payload).eq('id', item.id); if (error) throw error }
+        else { const { error } = await supabase.from('services').delete().eq('id', item.id); if (error) throw error }
+      } catch (_) { remaining.push(item) }
+    }
+    await localSet('offline_services', remaining)
+    if (!remaining.length) await loadServices()
   }
 
   useEffect(() => {
     loadServices()
+    const online = () => syncOfflineServices()
+    window.addEventListener('online', online)
+    if (navigator.onLine) syncOfflineServices()
+    return () => window.removeEventListener('online', online)
   }, [])
 
   function setField(key, value) {
@@ -63,52 +86,45 @@ export default function Services() {
   }
 
   async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    setUploading(true)
+    e.preventDefault(); setError(''); setUploading(true)
     try {
       let image_url = editingId ? undefined : null
       if (imageFile) {
-        const ext = imageFile.name.split('.').pop()
-        const fileName = `services/${crypto.randomUUID()}.${ext}`
-        const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, imageFile)
-        if (uploadError) throw uploadError
-        const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(fileName)
-        image_url = urlData.publicUrl
+        if (navigator.onLine) {
+          const ext = imageFile.name.split('.').pop(); const fileName = `services/${crypto.randomUUID()}.${ext}`
+          const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, imageFile)
+          if (uploadError) throw uploadError
+          const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(fileName); image_url = urlData.publicUrl
+        } else if (!editingId) image_url = null
       }
-
-      const payload = {
-        name: form.name,
-        description: form.description,
-        price: form.price !== '' ? parseFloat(form.price) : null,
-      }
+      const payload = { id: editingId || crypto.randomUUID(), name: form.name, description: form.description, price: form.price !== '' ? parseFloat(form.price) : null }
       if (image_url !== undefined) payload.image_url = image_url
-
-      if (editingId) {
-        const { error } = await supabase.from('services').update(payload).eq('id', editingId)
-        if (error) throw error
-      } else {
-        const { error } = await supabase.from('services').insert(payload)
-        if (error) throw error
+      if (!editingId) payload.created_at = new Date().toISOString()
+      if (!navigator.onLine) {
+        const current=(await localGet('services'))||services
+        const next=editingId?current.map(s=>s.id===editingId?{...s,...payload}:s):[payload,...current]
+        const q=(await localGet('offline_services'))||[]
+        await localSet('services',next); await localSet('offline_services',[...q,{operation:editingId?'update':'insert',id:payload.id,payload}]); setServices(next); cancelForm(); return
       }
-      cancelForm()
-      loadServices()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setUploading(false)
-    }
+      if (editingId) { const { error } = await supabase.from('services').update(payload).eq('id', editingId); if (error) throw error }
+      else { const { error } = await supabase.from('services').insert(payload); if (error) throw error }
+      cancelForm(); loadServices()
+    } catch (err) { setError(err.message) } finally { setUploading(false) }
   }
 
   async function handleDelete(id) {
     if (!window.confirm('Delete this service?')) return
-    await supabase.from('services').delete().eq('id', id)
-    loadServices()
+    if (!navigator.onLine) {
+      const next=services.filter(s=>s.id!==id); const q=(await localGet('offline_services'))||[]
+      await localSet('services',next); await localSet('offline_services',[...q,{operation:'delete',id}]); setServices(next); return
+    }
+    await supabase.from('services').delete().eq('id', id); loadServices()
   }
 
   async function addSuggested(s) {
-    await supabase.from('services').insert({ name: s.name, description: s.description })
-    loadServices()
+    const payload={id:crypto.randomUUID(),name:s.name,description:s.description,price:null,created_at:new Date().toISOString()}
+    if(!navigator.onLine){const current=(await localGet('services'))||services;const q=(await localGet('offline_services'))||[];const next=[payload,...current];await localSet('services',next);await localSet('offline_services',[...q,{operation:'insert',id:payload.id,payload}]);setServices(next);return}
+    await supabase.from('services').insert({name:s.name,description:s.description});loadServices()
   }
 
   return (
