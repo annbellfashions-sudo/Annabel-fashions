@@ -1,0 +1,122 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: #f7f5f0;
+  color: #1f2a24;
+}
+.app-shell { max-width: 480px; margin: 0 auto; min-height: 100vh; background: #fff; padding-bottom: 64px; position: relative; }
+
+@media (min-width: 700px) {
+  .app-shell { max-width: 700px; box-shadow: 0 0 24px rgba(0,0,0,0.06); }
+  .bottom-nav { max-width: 700px; }
+  .content { padding: 24px 32px; }
+}
+@media (min-width: 1000px) {
+  .app-shell { max-width: 960px; }
+  .bottom-nav { max-width: 960px; }
+}
+
+.modal-sheet { width: 100%; max-width: 480px; margin: 0 auto; }
+@media (min-width: 700px) {
+  .modal-sheet { max-width: 640px; }
+}
+.top-bar {
+  background: #123524;
+  color: #fff;
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.top-bar h1 { font-size: 18px; margin: 0; }
+.top-bar button { background: transparent; border: 1px solid #fff; color: #fff; padding: 6px 10px; border-radius: 6px; }
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0; right: 0;
+  max-width: 480px;
+  margin: 0 auto;
+  background: #fff;
+  border-top: 1px solid #e5e0d8;
+  display: flex;
+  overflow-x: auto;
+  z-index: 40;
+}
+.bottom-nav button {
+  flex: 1 0 auto;
+  min-width: 64px;
+  padding: 8px 6px;
+  background: none;
+  border: none;
+  font-size: 11px;
+  color: #6b6357;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.bottom-nav button.active { color: #123524; font-weight: 700; }
+.bottom-nav .icon { font-size: 18px; }
+.tabs { display: flex; border-bottom: 1px solid #e5e0d8; }
+.tabs button {
+  flex: 1; padding: 12px 0; background: none; border: none; font-size: 14px;
+  color: #6b6357; border-bottom: 2px solid transparent;
+}
+.tabs button.active { color: #123524; border-bottom: 2px solid #123524; font-weight: 600; }
+.content { padding: 16px; }
+.field { margin-bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 13px; color: #6b6357; }
+.field input, .field select { padding: 10px; border: 1px solid #d9d3c7; border-radius: 6px; font-size: 15px; }
+.btn-primary { background: #123524; color: #fff; border: none; padding: 12px; border-radius: 8px; font-size: 15px; width: 100%; }
+.btn-secondary { background: #eee8dd; color: #123524; border: none; padding: 10px; border-radius: 8px; font-size: 14px; }
+.error-text { color: #b3261e; font-size: 13px; }
+.product-card {
+  display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #eee6d9;
+}
+.product-card img, .product-thumb-placeholder {
+  width: 56px; height: 56px; border-radius: 8px; object-fit: cover; background: #eee8dd;
+  display: flex; align-items: center; justify-content: center; font-size: 11px; color: #9a9284; flex-shrink: 0;
+}
+.product-info { flex: 1; }
+.product-info .name { font-weight: 600; font-size: 14px; }
+.product-info .meta { font-size: 12px; color: #6b6357; }
+.cart-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #eee6d9; font-size: 14px; }
+.total-row { display: flex; justify-content: space-between; font-weight: 700; padding: 12px 0; font-size: 16px; }
+.image-upload-box {
+  border: 1px dashed #d9d3c7; border-radius: 8px; padding: 12px; text-align: center; margin-bottom: 12px;
+}
+.image-preview { width: 100%; max-height: 160px; object-fit: cover; border-radius: 8px; margin-bottom: 8px; }
+.product-actions { display: flex; gap: 10px; }
+.icon-btn { background: none; border: none; font-size: 16px; cursor: pointer; padding: 4px; }
+.expired-badge { color: #b3261e; font-size: 11px; font-weight: 700; }
+
+@media print {
+  body * { visibility: hidden; }
+  #receipt-printable, #receipt-printable * {
+    visibility: visible;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .receipt-overlay {
+    position: static !important;
+    background: none !important;
+    display: block !important;
+    inset: auto !important;
+  }
+  .modal-sheet {
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+  #receipt-printable {
+    position: static !important;
+    width: 100% !important;
+    margin: 0 !important;
+    left: auto !important;
+    top: auto !important;
+  }
+}
