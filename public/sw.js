@@ -1,10 +1,10 @@
-const CACHE_NAME = 'annbell-app-v3';
+const CACHE_NAME = 'annbell-app-v4-branding';
 const OFFLINE_URL = '/index.html';
 
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll([
-      '/', '/index.html', '/manifest.webmanifest', '/icon.svg'
+      '/', '/index.html', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/logo.jpg'
     ])).then(() => self.skipWaiting())
   );
 });
