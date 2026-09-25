@@ -5,7 +5,7 @@ import BarcodeScanner from './BarcodeScanner'
 import { playScanError } from '../lib/sound'
 import { localGet, localSet } from '../lib/offlineStore'
 
-export default function Sales() {
+export default function Sales({ userId }) {
   const [products, setProducts] = useState([])
   const [services, setServices] = useState([])
   const [customers, setCustomers] = useState([])
@@ -48,6 +48,14 @@ export default function Sales() {
     await localSet('customers', rows)
   }
 
+  async function cacheSalesSnapshot() {
+    if (!navigator.onLine) return
+    const { data: allSales } = await supabase.from('sales').select('*').order('created_at', { ascending: false })
+    const { data: allItems } = await supabase.from('sales_items').select('quantity, unit_price, cost_price, subtotal, created_at, sale_id, created_by, item_type')
+    if (allSales) await localSet('sales', allSales)
+    if (allItems) await localSet('sales_items', allItems)
+  }
+
   async function syncOfflineSales() {
     if (!navigator.onLine) return
     const queue = (await localGet('offline_sales')) || []
@@ -69,6 +77,7 @@ export default function Sales() {
     await localSet('offline_sales', remaining)
     if (!remaining.length) setStatus('Offline sales synchronized with Supabase.')
     await loadProducts(); await loadCustomers()
+    await cacheSalesSnapshot()
   }
 
   useEffect(() => {
@@ -148,6 +157,7 @@ export default function Sales() {
           id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           customer_name: finalName, total, payment_method: paymentMethod,
           status: 'completed', amount_paid: paidAmount, offline: true,
+          created_by: userId || null,
           created_at: new Date().toISOString()
         }
         const items = cart.map((c) => ({
@@ -155,11 +165,16 @@ export default function Sales() {
           service_id: c.type === 'service' ? c.item.id : null,
           item_type: c.type, quantity: c.quantity, unit_price: c.item.price,
           cost_price: c.type === 'product' ? c.item.cost_price || 0 : 0,
+          created_by: userId || null,
           subtotal: c.item.price * c.quantity,
         }))
         const queue = (await localGet('offline_sales')) || []
         queue.push({ sale, items, customerName: finalName })
         await localSet('offline_sales', queue)
+        const cachedSales = (await localGet('sales')) || []
+        const cachedItems = (await localGet('sales_items')) || []
+        await localSet('sales', [sale, ...cachedSales])
+        await localSet('sales_items', [...items, ...cachedItems])
         const nextProducts = products.map(p => {
           const line = cart.find(c => c.type === 'product' && c.item.id === p.id)
           return line ? { ...p, stock_quantity: Math.max(0, p.stock_quantity - line.quantity) } : p
@@ -225,6 +240,7 @@ export default function Sales() {
       setAmountPaid('')
       loadProducts()
       loadCustomers()
+      cacheSalesSnapshot()
     } catch (err) {
       setStatus(`Error: ${err.message}`)
     } finally {

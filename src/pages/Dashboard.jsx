@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import SaleDetail from './SaleDetail'
+import { localGet, localSet } from '../lib/offlineStore'
 
 function startOfToday() {
   const d = new Date()
@@ -44,6 +45,41 @@ export default function Dashboard({ scope = 'all', userId, isAdmin }) {
   async function loadData() {
     setLoading(true)
 
+    // Offline: use the complete sales/products/expenses snapshot saved on this phone.
+    // Never wait on Supabase when the device has no connection.
+    if (!navigator.onLine) {
+      const [cachedItems, cachedSales, cachedProducts, cachedExpenses] = await Promise.all([
+        localGet('sales_items'),
+        localGet('sales'),
+        localGet('products'),
+        localGet('expenses'),
+      ])
+      const allItems = cachedItems || []
+      const allSales = cachedSales || []
+      const start = from.getTime()
+      const end = to.getTime()
+      const items = allItems.filter((it) => {
+        const t = new Date(it.created_at || 0).getTime()
+        const own = scope !== 'own' || it.created_by === userId
+        return t >= start && t <= end && own
+      })
+      const salesRows = allSales.filter((row) => {
+        const t = new Date(row.created_at || 0).getTime()
+        const own = scope !== 'own' || row.created_by === userId
+        return t >= start && t <= end && own
+      })
+      const expRows = (cachedExpenses || []).filter((e) => {
+        const d = String(e.expense_date || '')
+        return d >= from.toISOString().slice(0, 10) && d <= to.toISOString().slice(0, 10)
+      })
+      setSalesItems(items)
+      setSales(salesRows)
+      setProducts(cachedProducts || [])
+      setExpenses(scope === 'all' ? expRows : [])
+      setLoading(false)
+      return
+    }
+
     let itemsQuery = supabase
       .from('sales_items')
       .select('quantity, unit_price, cost_price, subtotal, created_at, sale_id, created_by, item_type')
@@ -63,15 +99,29 @@ export default function Dashboard({ scope = 'all', userId, isAdmin }) {
     const { data: salesRows } = await salesQuery
     setSales(salesRows || [])
 
+    // Cache the full current snapshots so the dashboard can render offline later.
+    const { data: allItems } = await supabase.from('sales_items').select('quantity, unit_price, cost_price, subtotal, created_at, sale_id, created_by, item_type')
+    const { data: allSales } = await supabase.from('sales').select('*').order('created_at', { ascending: false })
+    if (allItems) await localSet('sales_items', allItems)
+    if (allSales) await localSet('sales', allSales)
+
     if (scope === 'all') {
       const { data: prods } = await supabase.from('products').select('name, cost_price, price, stock_quantity, reorder_level')
       setProducts(prods || [])
+      if (prods) {
+        // Products page stores the full product rows; dashboard keeps its own lightweight snapshot too.
+        const fullProducts = (await localGet('products')) || prods
+        await localSet('products', fullProducts)
+      }
       const { data: exp } = await supabase
         .from('expenses')
         .select('amount, expense_date')
         .gte('expense_date', from.toISOString().slice(0, 10))
         .lte('expense_date', to.toISOString().slice(0, 10))
       setExpenses(exp || [])
+
+      const { data: allExpenses } = await supabase.from('expenses').select('amount, expense_date')
+      if (allExpenses) await localSet('expenses', allExpenses)
     }
     setLoading(false)
   }
