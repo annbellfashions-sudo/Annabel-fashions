@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import BarcodeScanner from './BarcodeScanner'
 import { playScanError } from '../lib/sound'
+import { localGet, localSet } from '../lib/offlineStore'
 
 const emptyForm = { name: '', category: '', costPrice: '', price: '', stock: '', reorderLevel: '10', barcode: '' }
 
@@ -19,12 +20,50 @@ export default function Products({ isAdmin }) {
   const [restockQty, setRestockQty] = useState('')
 
   async function loadProducts() {
-    const { data } = await supabase.from('products').select('*').order('created_at', { ascending: false })
+    if (!navigator.onLine) {
+      setProducts((await localGet('products')) || [])
+      return
+    }
+    const { data, error: loadError } = await supabase.from('products').select('*').order('created_at', { ascending: false })
+    if (loadError) {
+      setProducts((await localGet('products')) || [])
+      return
+    }
     setProducts(data || [])
+    await localSet('products', data || [])
+  }
+
+  async function syncOfflineProducts() {
+    if (!navigator.onLine) return
+    const queue = (await localGet('offline_products')) || []
+    if (!queue.length) return
+    const remaining = []
+    for (const item of queue) {
+      try {
+        if (item.operation === 'insert') {
+          const { error } = await supabase.from('products').insert(item.payload)
+          if (error) throw error
+        } else if (item.operation === 'update') {
+          const { error } = await supabase.from('products').update(item.payload).eq('id', item.id)
+          if (error) throw error
+        } else if (item.operation === 'delete') {
+          const { error } = await supabase.from('products').delete().eq('id', item.id)
+          if (error) throw error
+        }
+      } catch (_) {
+        remaining.push(item)
+      }
+    }
+    await localSet('offline_products', remaining)
+    if (!remaining.length) await loadProducts()
   }
 
   useEffect(() => {
     loadProducts()
+    const online = () => syncOfflineProducts()
+    window.addEventListener('online', online)
+    if (navigator.onLine) syncOfflineProducts()
+    return () => window.removeEventListener('online', online)
   }, [])
 
   function setField(key, value) {
@@ -74,6 +113,14 @@ export default function Products({ isAdmin }) {
 
   async function handleDelete(id) {
     if (!window.confirm('Delete this product? This cannot be undone.')) return
+    if (!navigator.onLine) {
+      const next = products.filter((p) => p.id !== id)
+      const queue = (await localGet('offline_products')) || []
+      await localSet('products', next)
+      await localSet('offline_products', [...queue, { operation: 'delete', id }])
+      setProducts(next)
+      return
+    }
     const { error } = await supabase.from('products').delete().eq('id', id)
     if (error) setError(error.message)
     else loadProducts()
@@ -83,10 +130,20 @@ export default function Products({ isAdmin }) {
     const qty = parseInt(restockQty, 10)
     if (!qty || qty <= 0) return
     const product = products.find((p) => p.id === id)
-    await supabase.from('products').update({ stock_quantity: (product.stock_quantity || 0) + qty }).eq('id', id)
+    const payload = { stock_quantity: (product.stock_quantity || 0) + qty }
+    if (!navigator.onLine) {
+      const next = products.map((p) => p.id === id ? { ...p, ...payload } : p)
+      const queue = (await localGet('offline_products')) || []
+      await localSet('products', next)
+      await localSet('offline_products', [...queue, { operation: 'update', id, payload }])
+      setProducts(next)
+    } else {
+      const { error } = await supabase.from('products').update(payload).eq('id', id)
+      if (error) setError(error.message)
+      else loadProducts()
+    }
     setRestockingId(null)
     setRestockQty('')
-    loadProducts()
   }
 
   async function handleSubmit(e) {
@@ -95,17 +152,25 @@ export default function Products({ isAdmin }) {
     setUploading(true)
 
     try {
+      // Product photos are uploaded to Supabase Storage. When offline, save the
+      // product without a new photo and let the user add the photo later online.
       let image_url = editingId ? undefined : null
       if (imageFile) {
-        const ext = imageFile.name.split('.').pop()
-        const fileName = `${crypto.randomUUID()}.${ext}`
-        const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, imageFile)
-        if (uploadError) throw uploadError
-        const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(fileName)
-        image_url = urlData.publicUrl
+        if (!navigator.onLine) {
+          if (!editingId) image_url = null
+          else image_url = undefined
+        } else {
+          const ext = imageFile.name.split('.').pop()
+          const fileName = `${crypto.randomUUID()}.${ext}`
+          const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, imageFile)
+          if (uploadError) throw uploadError
+          const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(fileName)
+          image_url = urlData.publicUrl
+        }
       }
 
       const payload = {
+        id: editingId || crypto.randomUUID(),
         name: form.name,
         category: form.category,
         cost_price: form.costPrice ? parseFloat(form.costPrice) : 0,
@@ -115,6 +180,20 @@ export default function Products({ isAdmin }) {
         barcode: form.barcode || null,
       }
       if (image_url !== undefined) payload.image_url = image_url
+      if (!editingId) payload.created_at = new Date().toISOString()
+
+      if (!navigator.onLine) {
+        const current = (await localGet('products')) || products
+        const next = editingId
+          ? current.map((p) => p.id === editingId ? { ...p, ...payload } : p)
+          : [payload, ...current]
+        const queue = (await localGet('offline_products')) || []
+        await localSet('products', next)
+        await localSet('offline_products', [...queue, { operation: editingId ? 'update' : 'insert', id: payload.id, payload }])
+        setProducts(next)
+        cancelForm()
+        return
+      }
 
       if (editingId) {
         const { error: updateError } = await supabase.from('products').update(payload).eq('id', editingId)
@@ -127,7 +206,7 @@ export default function Products({ isAdmin }) {
       cancelForm()
       loadProducts()
     } catch (err) {
-      setError(err.message)
+      setError(err.message || 'Failed to save product')
     } finally {
       setUploading(false)
     }
